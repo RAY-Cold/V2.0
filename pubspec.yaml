@@ -12,6 +12,9 @@ dependencies:
   cupertino_icons: ^1.0.8   # Optional for iOS-style icons
   google_fonts: ^6.2.1
   flutter_animate: ^4.5.0
+  flutter_map: ^7.0.0
+  latlong2: ^0.9.1
+  geolocator: ^13.0.1
 
 dev_dependencies:
   flutter_test:
