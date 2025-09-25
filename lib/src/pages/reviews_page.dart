@@ -204,7 +204,7 @@ class ReviewApiService {
       ..onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'area_scores', // update header when avg/count change
+        table: 'area_scores', // update header when avg/count/safety change
         callback: (_) => onChange(),
       )
       ..subscribe();
@@ -249,8 +249,11 @@ class PlaceApiService {
   }
 
   Future<Map<String, dynamic>?> fetchScore(String placeId) async {
-    final r =
-        await _sb.from('area_scores').select().eq('place_id', placeId).maybeSingle();
+    final r = await _sb
+        .from('area_scores')
+        .select('avg_score,review_count,safety_score') // ← include safety_score
+        .eq('place_id', placeId)
+        .maybeSingle();
     return (r as Map<String, dynamic>?);
   }
 }
@@ -413,6 +416,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
   PlaceDto? _selectedPlace;
   num? _avgScore;
   int? _reviewCount;
+  num? _safetyScore; // 0..100
 
   // reviews
   List<Review> _all = [];
@@ -474,6 +478,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
       setState(() {
         _avgScore = null;
         _reviewCount = null;
+        _safetyScore = null;
         _all = [];
         _loading = false;
       });
@@ -485,6 +490,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
     final s = await placesApi.fetchScore(_selectedPlace!.id);
     _avgScore = (s?['avg_score'] as num?) ?? 0;
     _reviewCount = (s?['review_count'] as int?) ?? 0;
+    _safetyScore = (s?['safety_score'] as num?) ?? ((_avgScore ?? 0) * 20); // fallback
 
     // list (place-scoped)
     final sort = switch (_sortBy) {
@@ -559,7 +565,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
         _comment = '';
         _anonymous = false;
       });
-      await _loadForSelectedPlace(); // updates header + list
+      await _loadForSelectedPlace(); // updates header + list (incl. safety score)
     } catch (e) {
       _snack(e.toString());
     } finally {
@@ -639,6 +645,13 @@ class _ReviewsPageState extends State<ReviewsPage> {
     return list;
   }
 
+  Color _safetyColor(num s) {
+    final v = s.toDouble();
+    if (v >= 80) return Colors.green.shade600;
+    if (v >= 50) return Colors.amber.shade700;
+    return Colors.red.shade600;
+  }
+
   @override
   Widget build(BuildContext context) {
     final dist = _distribution;
@@ -675,6 +688,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
                               _selectedPlace = null;
                               _avgScore = null;
                               _reviewCount = null;
+                              _safetyScore = null;
                               _all = [];
                             });
                           },
@@ -723,13 +737,33 @@ class _ReviewsPageState extends State<ReviewsPage> {
                     title: Text(_selectedPlace!.name,
                         style: const TextStyle(fontWeight: FontWeight.w700)),
                     subtitle: (_avgScore != null)
-                        ? Row(
+                        ? Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text((_avgScore ?? 0).toStringAsFixed(1)),
-                              const SizedBox(width: 4),
-                              const Icon(Icons.star, size: 18, color: Colors.amber),
-                              const SizedBox(width: 8),
-                              Text('${_reviewCount ?? 0} review${(_reviewCount ?? 0) == 1 ? '' : 's'}'),
+                              Row(
+                                children: [
+                                  Text((_avgScore ?? 0).toStringAsFixed(1)),
+                                  const SizedBox(width: 4),
+                                  const Icon(Icons.star, size: 18, color: Colors.amber),
+                                  const SizedBox(width: 8),
+                                  Text('${_reviewCount ?? 0} review${(_reviewCount ?? 0) == 1 ? '' : 's'}'),
+                                ],
+                              ),
+                              const SizedBox(height: 6),
+                              if (_safetyScore != null)
+                                Row(
+                                  children: [
+                                    const Icon(Icons.shield_outlined, size: 18),
+                                    const SizedBox(width: 6),
+                                    Text(
+                                      'Safety score: ${(_safetyScore ?? 0).toStringAsFixed(0)}/100',
+                                      style: TextStyle(
+                                        fontWeight: FontWeight.w600,
+                                        color: _safetyColor(_safetyScore ?? 0),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                             ],
                           )
                         : null,
