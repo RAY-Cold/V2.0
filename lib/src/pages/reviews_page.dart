@@ -17,6 +17,9 @@ class ReviewDto {
   final int helpfulCount;
   final DateTime createdAt;
 
+  /// NEW: each review belongs to a place
+  final String placeId;
+
   ReviewDto({
     required this.id,
     required this.userId,
@@ -27,18 +30,21 @@ class ReviewDto {
     required this.reported,
     required this.helpfulCount,
     required this.createdAt,
+    required this.placeId,
   });
 
   factory ReviewDto.fromMap(Map<String, dynamic> m) => ReviewDto(
         id: m['id'] as String,
         userId: m['user_id'] as String,
-        displayName: m['display_name'] as String,
+        displayName: (m['display_name'] as String?) ?? 'Anonymous',
         rating: (m['rating'] as num).toInt(),
-        comment: m['comment'] as String,
+        comment: (m['comment'] as String?) ?? '',
         anonymous: (m['anonymous'] as bool?) ?? false,
         reported: (m['reported'] as bool?) ?? false,
         helpfulCount: (m['helpful_count'] as num?)?.toInt() ?? 0,
         createdAt: DateTime.parse(m['created_at'] as String),
+        // tolerate legacy 'area_code' if it exists
+        placeId: (m['place_id'] ?? m['area_code']) as String,
       );
 }
 
@@ -46,7 +52,9 @@ enum ReviewSort { newest, oldest, helpful }
 
 class ReviewApiService {
   final SupabaseClient _sb = Supabase.instance.client;
+  static const _table = 'reviews';
 
+  /// Back-compat fetch (not place-scoped). You can keep it if used elsewhere.
   Future<List<ReviewDto>> fetch({
     int? stars, // 1..5
     String? search,
@@ -56,14 +64,12 @@ class ReviewApiService {
   }) async {
     final uid = _sb.auth.currentUser?.id;
 
-    // Start as PostgrestBuilder so reassignment after .order()/.range() is type-safe.
     PostgrestBuilder query = _sb
-        .from('reviews')
+        .from(_table)
         .select()
         .or('reported.eq.false${uid != null ? ',user_id.eq.$uid' : ''}');
 
     if (stars != null && stars >= 1 && stars <= 5) {
-      // eq/or live on the Filter builder
       query = (query as PostgrestFilterBuilder).eq('rating', stars);
     }
 
@@ -73,15 +79,14 @@ class ReviewApiService {
           .or('comment.ilike.%$s%,display_name.ilike.%$s%');
     }
 
-    // order/range live on the Transform builder
     switch (sort) {
       case ReviewSort.newest:
-        query = (query as PostgrestTransformBuilder)
-            .order('created_at', ascending: false);
+        query =
+            (query as PostgrestTransformBuilder).order('created_at', ascending: false);
         break;
       case ReviewSort.oldest:
-        query = (query as PostgrestTransformBuilder)
-            .order('created_at', ascending: true);
+        query =
+            (query as PostgrestTransformBuilder).order('created_at', ascending: true);
         break;
       case ReviewSort.helpful:
         query = (query as PostgrestTransformBuilder)
@@ -90,8 +95,7 @@ class ReviewApiService {
         break;
     }
 
-    query =
-        (query as PostgrestTransformBuilder).range(offset, offset + limit - 1);
+    query = (query as PostgrestTransformBuilder).range(offset, offset + limit - 1);
 
     final data = await query;
     return (data as List)
@@ -99,7 +103,46 @@ class ReviewApiService {
         .toList();
   }
 
-  Future<ReviewDto> create({
+  /// NEW: fetch reviews for a specific place
+  Future<List<ReviewDto>> fetchByPlace({
+    required String placeId,
+    int limit = 50,
+    int offset = 0,
+    ReviewSort sort = ReviewSort.newest,
+  }) async {
+    PostgrestBuilder q =
+        _sb.from(_table).select().eq('place_id', placeId);
+
+    switch (sort) {
+      case ReviewSort.newest:
+        q = (q as PostgrestTransformBuilder)
+            .order('created_at', ascending: false);
+        break;
+      case ReviewSort.oldest:
+        q = (q as PostgrestTransformBuilder)
+            .order('created_at', ascending: true);
+        break;
+      case ReviewSort.helpful:
+        q = (q as PostgrestTransformBuilder)
+            .order('helpful_count', ascending: false)
+            .order('created_at', ascending: false);
+        break;
+    }
+
+    q = (q as PostgrestTransformBuilder).range(offset, offset + limit - 1);
+
+    final data = await q;
+    return (data as List)
+        .map((e) => ReviewDto.fromMap(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// NEW: create review via RPC that also updates area_scores atomically.
+  /// SQL: add_review_and_update_score(
+  ///   p_place_id uuid, p_user_id uuid, p_display_name text,
+  ///   p_rating int, p_comment text, p_anonymous boolean)
+  Future<ReviewDto> createForPlaceViaRpc({
+    required String placeId,
     required int rating,
     required String comment,
     required bool anonymous,
@@ -109,46 +152,33 @@ class ReviewApiService {
     if (user == null) {
       throw Exception('Not authenticated');
     }
-
-    // Try to use user metadata for display name if available
     final meta = user.userMetadata ?? {};
     final dn = displayNameOverride ??
-        (meta['full_name'] ??
-            meta['name'] ??
-            meta['display_name'] ??
-            'TourSecure User');
+        (meta['full_name'] ?? meta['name'] ?? meta['display_name'] ?? 'TourSecure User');
 
-    final inserted = await _sb.from('reviews').insert({
-      'user_id': user.id,
-      'display_name': dn,
-      'rating': rating,
-      'comment': comment,
-      'anonymous': anonymous,
-    }).select().single();
+    final res = await _sb.rpc('add_review_and_update_score', params: {
+      'p_place_id': placeId,
+      'p_user_id': user.id,
+      'p_display_name': dn,
+      'p_rating': rating,
+      'p_comment': comment,
+      'p_anonymous': anonymous,
+    });
 
-    return ReviewDto.fromMap(inserted as Map<String, dynamic>);
+    return ReviewDto.fromMap(res as Map<String, dynamic>);
   }
 
   Future<void> delete(String reviewId) async {
     final user = _sb.auth.currentUser;
     if (user == null) throw Exception('Not authenticated');
-    await _sb.from('reviews').delete().eq('id', reviewId);
+    await _sb.from(_table).delete().eq('id', reviewId);
   }
 
   Future<void> report(String reviewId, {String? reason}) async {
     final user = _sb.auth.currentUser;
     if (user == null) throw Exception('Not authenticated');
-
-    // Simple path: set reported = true (owner-only update via policy)
-    // If you want anyone to report (not just owner), use review_reports table instead
-    await _sb.from('reviews').update({'reported': true}).eq('id', reviewId);
-
-    // Alternate (commented):
-    // await _sb.from('review_reports').insert({
-    //   'review_id': reviewId,
-    //   'user_id': user.id,
-    //   'reason': reason,
-    // });
+    await _sb.from(_table).update({'reported': true}).eq('id', reviewId);
+    // Or insert into review_reports if you prefer a separate table
   }
 
   Future<void> markHelpful(String reviewId) async {
@@ -162,7 +192,7 @@ class ReviewApiService {
       ..onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'reviews',
+        table: _table,
         callback: (_) => onChange(),
       )
       ..onPostgresChanges(
@@ -171,12 +201,57 @@ class ReviewApiService {
         table: 'review_helpful',
         callback: (_) => onChange(),
       )
+      ..onPostgresChanges(
+        event: PostgresChangeEvent.all,
+        schema: 'public',
+        table: 'area_scores', // update header when avg/count change
+        callback: (_) => onChange(),
+      )
       ..subscribe();
     return ch;
   }
 
   Future<void> unsubscribe(RealtimeChannel ch) async {
     await _sb.removeChannel(ch);
+  }
+}
+
+/// =======================================================
+/// Minimal Place models/services (kept in this file)
+/// =======================================================
+
+class PlaceDto {
+  final String id;
+  final String name;
+  final String? address;
+  PlaceDto({required this.id, required this.name, this.address});
+
+  factory PlaceDto.fromMap(Map<String, dynamic> m) => PlaceDto(
+        id: m['id'] as String,
+        name: m['name'] as String,
+        address: m['address'] as String?,
+      );
+}
+
+class PlaceApiService {
+  final SupabaseClient _sb = Supabase.instance.client;
+
+  Future<List<PlaceDto>> search(String q, {int limit = 10}) async {
+    if (q.trim().isEmpty) return [];
+    final res = await _sb
+        .from('places')
+        .select('id,name,address')
+        .ilike('name', '%${q.trim()}%')
+        .limit(limit);
+    return (res as List)
+        .map((e) => PlaceDto.fromMap(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  Future<Map<String, dynamic>?> fetchScore(String placeId) async {
+    final r =
+        await _sb.from('area_scores').select().eq('place_id', placeId).maybeSingle();
+    return (r as Map<String, dynamic>?);
   }
 }
 
@@ -240,18 +315,7 @@ String _fmtDate(DateTime dt) {
 
 String _mon(int m) {
   const names = [
-    'Jan',
-    'Feb',
-    'Mar',
-    'Apr',
-    'May',
-    'Jun',
-    'Jul',
-    'Aug',
-    'Sep',
-    'Oct',
-    'Nov',
-    'Dec'
+    'Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'
   ];
   return names[m - 1];
 }
@@ -296,11 +360,7 @@ class Pill extends StatelessWidget {
   final String text;
   final bool selected;
   final VoidCallback onTap;
-  const Pill(
-      {super.key,
-      required this.text,
-      required this.selected,
-      required this.onTap});
+  const Pill({super.key, required this.text, required this.selected, required this.onTap});
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
@@ -322,9 +382,7 @@ class Pill extends StatelessWidget {
         child: Text(
           text,
           style: TextStyle(
-            color: selected
-                ? Theme.of(context).colorScheme.primary
-                : Colors.black87,
+            color: selected ? Theme.of(context).colorScheme.primary : Colors.black87,
             fontWeight: FontWeight.w600,
           ),
         ),
@@ -334,7 +392,7 @@ class Pill extends StatelessWidget {
 }
 
 /// =======================================================
-/// Reviews Page (Supabase-backed)
+/// Reviews Page (Supabase-backed, now place-scoped)
 /// =======================================================
 
 class ReviewsPage extends StatefulWidget {
@@ -346,8 +404,17 @@ class ReviewsPage extends StatefulWidget {
 
 class _ReviewsPageState extends State<ReviewsPage> {
   final api = ReviewApiService();
+  final placesApi = PlaceApiService();
   RealtimeChannel? _ch;
 
+  // Place search + selection
+  final _placeSearchCtrl = TextEditingController();
+  List<PlaceDto> _suggestions = [];
+  PlaceDto? _selectedPlace;
+  num? _avgScore;
+  int? _reviewCount;
+
+  // reviews
   List<Review> _all = [];
   bool _loading = true;
 
@@ -357,7 +424,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
   bool _anonymous = false;
   bool _submitting = false;
 
-  // list controls
+  // list controls (still available after place selection)
   String _query = '';
   int _filterStars = 0; // 0 = all, else exact stars
   SortBy _sortBy = SortBy.newest;
@@ -365,34 +432,76 @@ class _ReviewsPageState extends State<ReviewsPage> {
   @override
   void initState() {
     super.initState();
-    _load();
-    _ch = api.subscribe(() {
-      _load(); // auto refresh on DB changes
+    _placeSearchCtrl.addListener(_onPlaceSearchChanged);
+    _ch = api.subscribe(() async {
+      // refresh both header and list when DB changes
+      await _loadForSelectedPlace();
     });
   }
 
   @override
   void dispose() {
+    _placeSearchCtrl.dispose();
     if (_ch != null) {
       api.unsubscribe(_ch!);
     }
     super.dispose();
   }
 
-  Future<void> _load() async {
+  // ── Place search / selection ────────────────────────────────────────────────
+  void _onPlaceSearchChanged() async {
+    final q = _placeSearchCtrl.text;
+    if (q.trim().isEmpty) {
+      setState(() => _suggestions = []);
+      return;
+    }
+    final res = await placesApi.search(q);
+    if (!mounted) return;
+    setState(() => _suggestions = res);
+  }
+
+  Future<void> _pickPlace(PlaceDto p) async {
+    setState(() {
+      _selectedPlace = p;
+      _placeSearchCtrl.text = p.name;
+      _suggestions = [];
+    });
+    await _loadForSelectedPlace();
+  }
+
+  Future<void> _loadForSelectedPlace() async {
+    if (_selectedPlace == null) {
+      setState(() {
+        _avgScore = null;
+        _reviewCount = null;
+        _all = [];
+        _loading = false;
+      });
+      return;
+    }
     setState(() => _loading = true);
 
-    final dtos = await api.fetch(
-      stars: _filterStars == 0 ? null : _filterStars,
-      search: _query.isEmpty ? null : _query,
-      sort: switch (_sortBy) {
-        SortBy.newest => ReviewSort.newest,
-        SortBy.oldest => ReviewSort.oldest,
-        SortBy.helpful => ReviewSort.helpful,
-      },
+    // header score
+    final s = await placesApi.fetchScore(_selectedPlace!.id);
+    _avgScore = (s?['avg_score'] as num?) ?? 0;
+    _reviewCount = (s?['review_count'] as int?) ?? 0;
+
+    // list (place-scoped)
+    final sort = switch (_sortBy) {
+      SortBy.newest => ReviewSort.newest,
+      SortBy.oldest => ReviewSort.oldest,
+      SortBy.helpful => ReviewSort.helpful,
+    };
+
+    final dtos = await api.fetchByPlace(
+      placeId: _selectedPlace!.id,
+      limit: 100, // adjust as needed
+      offset: 0,
+      sort: sort,
     );
 
-    _all = dtos
+    // local post-filtering (search/stars) – keeps your original behavior
+    var visible = dtos
         .map((d) => Review(
               id: d.id,
               userId: d.userId,
@@ -405,22 +514,42 @@ class _ReviewsPageState extends State<ReviewsPage> {
               reported: d.reported,
             ))
         .toList();
+    if (_filterStars != 0) {
+      visible = visible.where((r) => r.rating == _filterStars).toList();
+    }
+    if (_query.trim().isNotEmpty) {
+      final q = _query.toLowerCase();
+      visible = visible
+          .where((r) =>
+              r.comment.toLowerCase().contains(q) ||
+              (!r.anonymous && r.displayName.toLowerCase().contains(q)))
+          .toList();
+    }
 
-    setState(() => _loading = false);
+    setState(() {
+      _all = visible;
+      _loading = false;
+    });
   }
 
+  // ── Helpers ────────────────────────────────────────────────────────────────
   void _snack(String msg) {
     ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
   }
 
   Future<void> _submit() async {
+    if (_selectedPlace == null) {
+      _snack('Search and select a place first.');
+      return;
+    }
     if (_rating == 0 || _comment.trim().isEmpty) {
       _snack('Please add a star rating and a comment.');
       return;
     }
     setState(() => _submitting = true);
     try {
-      await api.create(
+      await api.createForPlaceViaRpc(
+        placeId: _selectedPlace!.id,
         rating: _rating,
         comment: _comment.trim(),
         anonymous: _anonymous,
@@ -430,7 +559,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
         _comment = '';
         _anonymous = false;
       });
-      await _load();
+      await _loadForSelectedPlace(); // updates header + list
     } catch (e) {
       _snack(e.toString());
     } finally {
@@ -441,7 +570,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
   void _toggleHelpful(Review r) async {
     try {
       await api.markHelpful(r.id);
-      await _load();
+      await _loadForSelectedPlace();
     } catch (e) {
       _snack(e.toString());
     }
@@ -451,7 +580,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
     try {
       await api.report(r.id);
       _snack('Reported.');
-      await _load();
+      await _loadForSelectedPlace();
     } catch (e) {
       _snack(e.toString());
     }
@@ -464,12 +593,8 @@ class _ReviewsPageState extends State<ReviewsPage> {
         title: const Text('Delete review?'),
         content: const Text('This action cannot be undone.'),
         actions: [
-          TextButton(
-              onPressed: () => Navigator.pop(context, false),
-              child: const Text('Cancel')),
-          ElevatedButton(
-              onPressed: () => Navigator.pop(context, true),
-              child: const Text('Delete')),
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(context, true), child: const Text('Delete')),
         ],
       ),
     );
@@ -477,7 +602,7 @@ class _ReviewsPageState extends State<ReviewsPage> {
 
     try {
       await api.delete(r.id);
-      await _load();
+      await _loadForSelectedPlace();
     } catch (e) {
       _snack(e.toString());
     }
@@ -498,21 +623,8 @@ class _ReviewsPageState extends State<ReviewsPage> {
   }
 
   List<Review> get _visible {
-    // Server did filtering/sorting already, but keep local fallback for search/stars
-    var list = _all.where((r) => !r.reported || true).toList(); // own reported included by fetch
-
-    if (_filterStars != 0) {
-      list = list.where((r) => r.rating == _filterStars).toList();
-    }
-    if (_query.trim().isNotEmpty) {
-      final q = _query.toLowerCase();
-      list = list
-          .where((r) =>
-              r.comment.toLowerCase().contains(q) ||
-              (!r.anonymous && r.displayName.toLowerCase().contains(q)))
-          .toList();
-    }
-
+    // already post-filtered in _loadForSelectedPlace(); keep here for safety
+    var list = List<Review>.from(_all);
     list.sort((a, b) {
       switch (_sortBy) {
         case SortBy.newest:
@@ -534,76 +646,185 @@ class _ReviewsPageState extends State<ReviewsPage> {
       appBar: AppBar(
         title: const Text('Reviews'),
       ),
-      body: _loading
-          ? const Center(child: CircularProgressIndicator())
-          : RefreshIndicator(
-              onRefresh: _load,
-              child: SingleChildScrollView(
-                physics: const AlwaysScrollableScrollPhysics(),
-                padding: const EdgeInsets.all(16),
-                child: Column(
-                  children: [
-                    _SummaryCard(
-                        avg: _avg, total: _all.length, distribution: dist),
-                    const SizedBox(height: 16),
-                    _Controls(
-                      query: _query,
-                      onQuery: (v) => setState(() => _query = v),
-                      filterStars: _filterStars,
-                      onFilterStars: (s) async {
-                        setState(() => _filterStars = s);
-                        await _load();
-                      },
-                      sortBy: _sortBy,
-                      onSortBy: (s) async {
-                        setState(() => _sortBy = s);
-                        await _load();
-                      },
-                    ),
-                    const SizedBox(height: 16),
-                    _AddReviewCard(
-                      rating: _rating,
-                      onStar: (s) => setState(() => _rating = s),
-                      comment: _comment,
-                      onComment: (t) => setState(() => _comment = t),
-                      anonymous: _anonymous,
-                      onAnon: (v) => setState(() => _anonymous = v),
-                      submitting: _submitting,
-                      onSubmit: _submit,
-                    ),
-                    const SizedBox(height: 16),
-                    if (_visible.isEmpty)
-                      Padding(
-                        padding: const EdgeInsets.symmetric(vertical: 40),
-                        child: Text(
-                          'No reviews yet.',
-                          style: TextStyle(color: Colors.grey.shade600),
-                        ),
-                      )
-                    else
-                      ListView.separated(
-                        physics: const NeverScrollableScrollPhysics(),
-                        shrinkWrap: true,
-                        itemBuilder: (_, i) {
-                          final r = _visible[i];
-                          final isMine =
-                              r.userId == Supabase.instance.client.auth.currentUser?.id;
-                          return _ReviewTile(
-                            review: r,
-                            isMine: isMine,
-                            onHelpful: () => _toggleHelpful(r),
-                            onReport: () => _report(r),
-                            onDelete: isMine ? () => _delete(r) : null,
-                          );
-                        },
-                        separatorBuilder: (_, __) => const SizedBox(height: 10),
-                        itemCount: _visible.length,
-                      ),
-                    const SizedBox(height: 24),
-                  ],
+      body: RefreshIndicator(
+        onRefresh: _loadForSelectedPlace,
+        child: SingleChildScrollView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
+              // ── Place search ───────────────────────────────────────────────
+              TextField(
+                controller: _placeSearchCtrl,
+                decoration: InputDecoration(
+                  hintText: 'Search places…',
+                  prefixIcon: const Icon(Icons.search),
+                  filled: true,
+                  fillColor: Colors.grey.shade100,
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(14),
+                    borderSide: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  suffixIcon: (_placeSearchCtrl.text.isNotEmpty)
+                      ? IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () {
+                            _placeSearchCtrl.clear();
+                            setState(() {
+                              _suggestions = [];
+                              _selectedPlace = null;
+                              _avgScore = null;
+                              _reviewCount = null;
+                              _all = [];
+                            });
+                          },
+                        )
+                      : null,
                 ),
               ),
-            ),
+              if (_suggestions.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Card(
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(12),
+                    side: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  child: ListView.separated(
+                    shrinkWrap: true,
+                    padding: EdgeInsets.zero,
+                    physics: const NeverScrollableScrollPhysics(),
+                    itemCount: _suggestions.length,
+                    separatorBuilder: (_, __) => Divider(height: 0, color: Colors.grey.shade300),
+                    itemBuilder: (_, i) {
+                      final p = _suggestions[i];
+                      return ListTile(
+                        leading: const Icon(Icons.place_outlined),
+                        title: Text(p.name),
+                        subtitle: p.address != null ? Text(p.address!) : null,
+                        onTap: () => _pickPlace(p),
+                      );
+                    },
+                  ),
+                ),
+              ],
+              const SizedBox(height: 12),
+
+              // ── Selected place header + score ──────────────────────────────
+              if (_selectedPlace != null)
+                Card(
+                  elevation: 0,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    side: BorderSide(color: Colors.grey.shade300),
+                  ),
+                  child: ListTile(
+                    leading: const Icon(Icons.place),
+                    title: Text(_selectedPlace!.name,
+                        style: const TextStyle(fontWeight: FontWeight.w700)),
+                    subtitle: (_avgScore != null)
+                        ? Row(
+                            children: [
+                              Text((_avgScore ?? 0).toStringAsFixed(1)),
+                              const SizedBox(width: 4),
+                              const Icon(Icons.star, size: 18, color: Colors.amber),
+                              const SizedBox(width: 8),
+                              Text('${_reviewCount ?? 0} review${(_reviewCount ?? 0) == 1 ? '' : 's'}'),
+                            ],
+                          )
+                        : null,
+                  ),
+                )
+              else
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 24),
+                  child: Text(
+                    'Search and select a place to see its reviews.',
+                    style: TextStyle(color: Colors.grey.shade600),
+                  ),
+                ),
+
+              const SizedBox(height: 16),
+
+              // ── Summary (of currently visible list) ────────────────────────
+              if (_selectedPlace != null)
+                _SummaryCard(avg: _avg, total: _all.length, distribution: dist),
+
+              const SizedBox(height: 16),
+
+              // ── Controls (filter/search within this place) ─────────────────
+              if (_selectedPlace != null)
+                _Controls(
+                  query: _query,
+                  onQuery: (v) {
+                    setState(() => _query = v);
+                    _loadForSelectedPlace();
+                  },
+                  filterStars: _filterStars,
+                  onFilterStars: (s) async {
+                    setState(() => _filterStars = s);
+                    await _loadForSelectedPlace();
+                  },
+                  sortBy: _sortBy,
+                  onSortBy: (s) async {
+                    setState(() => _sortBy = s);
+                    await _loadForSelectedPlace();
+                  },
+                ),
+
+              const SizedBox(height: 16),
+
+              // ── Add review (only after a place is selected) ───────────────
+              if (_selectedPlace != null)
+                _AddReviewCard(
+                  rating: _rating,
+                  onStar: (s) => setState(() => _rating = s),
+                  comment: _comment,
+                  onComment: (t) => setState(() => _comment = t),
+                  anonymous: _anonymous,
+                  onAnon: (v) => setState(() => _anonymous = v),
+                  submitting: _submitting,
+                  onSubmit: _submit,
+                ),
+
+              const SizedBox(height: 16),
+
+              // ── Reviews list ───────────────────────────────────────────────
+              if (_selectedPlace != null)
+                (_loading
+                    ? const Center(child: Padding(
+                        padding: EdgeInsets.symmetric(vertical: 40),
+                        child: CircularProgressIndicator(),
+                      ))
+                    : (_visible.isEmpty
+                        ? Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 40),
+                            child: Text('No reviews yet.', style: TextStyle(color: Colors.grey.shade600)),
+                          )
+                        : ListView.separated(
+                            physics: const NeverScrollableScrollPhysics(),
+                            shrinkWrap: true,
+                            itemBuilder: (_, i) {
+                              final r = _visible[i];
+                              final isMine = r.userId ==
+                                  Supabase.instance.client.auth.currentUser?.id;
+                              return _ReviewTile(
+                                review: r,
+                                isMine: isMine,
+                                onHelpful: () => _toggleHelpful(r),
+                                onReport: () => _report(r),
+                                onDelete: isMine ? () => _delete(r) : null,
+                              );
+                            },
+                            separatorBuilder: (_, __) => const SizedBox(height: 10),
+                            itemCount: _visible.length,
+                          ))),
+
+              const SizedBox(height: 24),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }
@@ -616,8 +837,7 @@ class _SummaryCard extends StatelessWidget {
   final double avg;
   final int total;
   final Map<int, int> distribution;
-  const _SummaryCard(
-      {required this.avg, required this.total, required this.distribution});
+  const _SummaryCard({required this.avg, required this.total, required this.distribution});
 
   @override
   Widget build(BuildContext context) {
@@ -641,8 +861,7 @@ class _SummaryCard extends StatelessWidget {
               child: Column(
                 children: [
                   Text(avg.toStringAsFixed(1),
-                      style: theme.textTheme.displaySmall
-                          ?.copyWith(fontWeight: FontWeight.w700)),
+                      style: theme.textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w700)),
                   const SizedBox(height: 6),
                   StarRow(filled: avg.round(), size: 22),
                   const SizedBox(height: 6),
@@ -677,8 +896,7 @@ class _BarRow extends StatelessWidget {
   final String label;
   final double value;
   final double max;
-  const _BarRow(
-      {required this.label, required this.value, required this.max});
+  const _BarRow({required this.label, required this.value, required this.max});
 
   @override
   Widget build(BuildContext context) {
@@ -700,8 +918,7 @@ class _BarRow extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
-          SizedBox(
-              width: 34, child: Text(value.toInt().toString(), textAlign: TextAlign.left)),
+          SizedBox(width: 34, child: Text(value.toInt().toString(), textAlign: TextAlign.left)),
         ],
       ),
     );
@@ -709,7 +926,7 @@ class _BarRow extends StatelessWidget {
 }
 
 /// =======================================================
-/// Controls (search, chips, sort)
+/// Controls (search, chips, sort) – within selected place
 /// =======================================================
 
 class _Controls extends StatelessWidget {
@@ -733,10 +950,10 @@ class _Controls extends StatelessWidget {
   Widget build(BuildContext context) {
     return Column(
       children: [
-        // search
+        // search within reviews of selected place
         TextField(
           decoration: InputDecoration(
-            hintText: 'Search reviews...',
+            hintText: 'Search reviews…',
             prefixIcon: const Icon(Icons.search),
             filled: true,
             fillColor: Colors.grey.shade100,
@@ -849,8 +1066,7 @@ class _AddReviewCard extends StatelessWidget {
               minLines: 3,
               maxLines: 5,
               decoration: InputDecoration(
-                hintText:
-                    'Share details about safety, lighting, crowd, police presence...',
+                hintText: 'Share details about safety, lighting, crowd, police presence...',
                 filled: true,
                 fillColor: Colors.grey.shade100,
                 border: OutlineInputBorder(
@@ -931,17 +1147,14 @@ class _ReviewTile extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text(name,
-                          style:
-                              const TextStyle(fontWeight: FontWeight.w700)),
+                      Text(name, style: const TextStyle(fontWeight: FontWeight.w700)),
                       const SizedBox(height: 2),
                       Row(
                         children: [
                           StarRow(filled: review.rating, size: 18),
                           const SizedBox(width: 8),
                           Text(_fmtDate(review.createdAt),
-                              style: TextStyle(
-                                  color: Colors.grey.shade600, fontSize: 12)),
+                              style: TextStyle(color: Colors.grey.shade600, fontSize: 12)),
                         ],
                       ),
                     ],

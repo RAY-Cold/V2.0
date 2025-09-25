@@ -1,73 +1,35 @@
+// lib/src/services/review_api_service.dart
+// Updated to use place-scoped fetch and atomic insert via RPC.
+// NOTE: ReviewDto is defined in reviews_page.dart and imported here.
+
 import 'package:supabase_flutter/supabase_flutter.dart';
-
-class ReviewDto {
-  final String id;
-  final String userId;
-  final String displayName;
-  final int rating;
-  final String comment;
-  final bool anonymous;
-  final bool reported;
-  final int helpfulCount;
-  final DateTime createdAt;
-
-  ReviewDto({
-    required this.id,
-    required this.userId,
-    required this.displayName,
-    required this.rating,
-    required this.comment,
-    required this.anonymous,
-    required this.reported,
-    required this.helpfulCount,
-    required this.createdAt,
-  });
-
-  factory ReviewDto.fromMap(Map<String, dynamic> m) => ReviewDto(
-    id: m['id'] as String,
-    userId: m['user_id'] as String,
-    displayName: m['display_name'] as String,
-    rating: (m['rating'] as num).toInt(),
-    comment: m['comment'] as String,
-    anonymous: (m['anonymous'] as bool?) ?? false,
-    reported: (m['reported'] as bool?) ?? false,
-    helpfulCount: (m['helpful_count'] as num?)?.toInt() ?? 0,
-    createdAt: DateTime.parse(m['created_at'] as String),
-  );
-}
+import '../pages/reviews_page.dart' show ReviewDto;
 
 enum ReviewSort { newest, oldest, helpful }
 
 class ReviewApiService {
-  final _sb = Supabase.instance.client;
+  ReviewApiService(this._sb);
+  final SupabaseClient _sb;
 
+  static const String _table = 'reviews';
+
+  /// Back-compat: your older fetch() that listed everything.
+  /// You can keep it if elsewhere used; otherwise switch to fetchByPlace().
   Future<List<ReviewDto>> fetch({
-    int? stars,                   // exact match filter, 1..5
-    String? search,               // search in comment / display_name
+    int? stars,
+    String? search,
     ReviewSort sort = ReviewSort.newest,
     int limit = 30,
     int offset = 0,
     bool includeOwnEvenIfReported = true,
   }) async {
     final uid = _sb.auth.currentUser?.id;
-    var query = _sb.from('reviews').select();
 
-    // reported=false policy already allows reading;
-    // to include own reported, union with own rows
-    if (includeOwnEvenIfReported && uid != null) {
-      // Workaround: query all non-reported + own
-      query = _sb.rpc('',
-        params: {}
-      ); // placeholder to keep IDE happy (we’ll just chain filters below)
-    }
-
-    // Base: non-reported or (own)
-    final base = _sb
-        .from('reviews')
+    // Base: non-reported or own
+    var q = _sb
+        .from(_table)
         .select()
         .or('reported.eq.false${uid != null ? ',user_id.eq.$uid' : ''}');
-
-    var q = base;
 
     if (stars != null && stars >= 1 && stars <= 5) {
       q = q.eq('rating', stars);
@@ -85,74 +47,95 @@ class ReviewApiService {
         q = q.order('created_at', ascending: true);
         break;
       case ReviewSort.helpful:
-        q = q.order('helpful_count', ascending: false)
-             .order('created_at', ascending: false);
+        q = q
+            .order('helpful_count', ascending: false)
+            .order('created_at', ascending: false);
         break;
     }
 
     q = q.range(offset, offset + limit - 1);
 
     final data = await q;
-    return (data as List).map((e) => ReviewDto.fromMap(e as Map<String, dynamic>)).toList();
+    return (data as List)
+        .map((e) => ReviewDto.fromMap(e as Map<String, dynamic>))
+        .toList();
   }
 
-  Future<ReviewDto> create({
+  /// New: fetch reviews scoped to a specific place.
+  Future<List<ReviewDto>> fetchByPlace({
+    required String placeId,
+    int limit = 20,
+    int offset = 0,
+    String orderBy = 'created_at',
+    bool desc = true,
+  }) async {
+    final res = await _sb
+        .from(_table)
+        .select()
+        .eq('place_id', placeId)
+        .order(orderBy, ascending: !desc)
+        .range(offset, offset + limit - 1);
+
+    return (res as List)
+        .map((e) => ReviewDto.fromMap(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// New: create review via RPC that also updates area_scores atomically.
+  /// SQL: add_review_and_update_score(
+  ///   p_place_id uuid, p_user_id uuid, p_display_name text,
+  ///   p_rating int, p_comment text, p_anonymous boolean)
+  Future<ReviewDto> createForPlaceViaRpc({
+    required String placeId,
+    required String userId,
+    required String displayName,
     required int rating,
     required String comment,
     required bool anonymous,
-    required String displayName, // from profile
   }) async {
-    final user = _sb.auth.currentUser;
-    if (user == null) {
-      throw Exception('Not authenticated');
-    }
-    final inserted = await _sb.from('reviews').insert({
-      'user_id': user.id,
-      'display_name': displayName,
-      'rating': rating,
-      'comment': comment,
-      'anonymous': anonymous,
-    }).select().single();
-    return ReviewDto.fromMap(inserted);
+    final res = await _sb.rpc('add_review_and_update_score', params: {
+      'p_place_id': placeId,
+      'p_user_id': userId,
+      'p_display_name': displayName,
+      'p_rating': rating,
+      'p_comment': comment,
+      'p_anonymous': anonymous,
+    });
+
+    return ReviewDto.fromMap(res as Map<String, dynamic>);
   }
 
+  /// Keep your delete as-is (RLS should guard ownership).
   Future<void> delete(String reviewId) async {
     final user = _sb.auth.currentUser;
     if (user == null) throw Exception('Not authenticated');
-    // RLS ensures only owner can delete
-    await _sb.from('reviews').delete().eq('id', reviewId);
+    await _sb.from(_table).delete().eq('id', reviewId);
   }
 
+  /// Keep your report flow.
   Future<void> report(String reviewId, {String? reason}) async {
     final user = _sb.auth.currentUser;
     if (user == null) throw Exception('Not authenticated');
 
-    // choose one:
-    // A) simple: set reported=true (only admins later un-report)
-    await _sb.from('reviews').update({'reported': true})
-      .eq('id', reviewId);
+    await _sb.from(_table).update({'reported': true}).eq('id', reviewId);
 
-    // B) or: create report row (keeps review visible until threshold)
-    // await _sb.from('review_reports').insert({
-    //   'review_id': reviewId,
-    //   'user_id': user.id,
-    //   'reason': reason,
-    // });
+    // Or insert into review_reports table if you use that approach.
   }
 
+  /// Keep your helpful RPC name for compatibility.
   Future<void> markHelpful(String reviewId) async {
     final user = _sb.auth.currentUser;
     if (user == null) throw Exception('Not authenticated');
     await _sb.rpc('mark_review_helpful', params: {'p_review_id': reviewId});
   }
 
-  /// (Optional) realtime subscription
+  /// Realtime subscription (unchanged).
   RealtimeChannel subscribe(void Function() onChange) {
     final ch = _sb.channel('reviews-ch')
       ..onPostgresChanges(
         event: PostgresChangeEvent.all,
         schema: 'public',
-        table: 'reviews',
+        table: _table,
         callback: (_) => onChange(),
       )
       ..subscribe();
