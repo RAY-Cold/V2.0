@@ -17,6 +17,8 @@ dependencies:
   geolocator: ^13.0.1
   flutter_map_heatmap: ^0.0.8
   shared_preferences: ^2.2.3
+  file_picker: ^8.1.2
+
 dev_dependencies:
   flutter_test:
     sdk: flutter

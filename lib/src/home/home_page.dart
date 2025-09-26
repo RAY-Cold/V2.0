@@ -241,18 +241,12 @@ class _MainDrawer extends StatelessWidget {
     );
   }
 }
-*/
-
-import 'dart:ui';
+*/import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
+
 import '../theme/app_theme.dart';
-import '../pages/heatmap_page.dart';
-import '../pages/reviews_page.dart';
-import '../pages/efir_page.dart';
-import '../pages/itinerary_page.dart';
-import '../pages/digital_id_page.dart';
-import '../pages/about_page.dart';
+import '../pages/pages.dart'; // barrel: heatmap_page.dart, reviews_page.dart, efir_page.dart, etc.
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -268,11 +262,16 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
   void initState() {
     super.initState();
     _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
-    _scale = Tween<double>(begin: 0.96, end: 1.06).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
+    _scale = Tween<double>(begin: 0.96, end: 1.06).animate(
+      CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
+    );
   }
 
   @override
-  void dispose() { _pulse.dispose(); super.dispose(); }
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -284,8 +283,18 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
       ),
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        drawer: _MainDrawer(), // left hamburger
-        appBar: AppBar(title: const Text('TourSecure'), backgroundColor: Colors.transparent),
+        drawer: const _MainDrawer(), // left hamburger
+        appBar: AppBar(
+          title: const Text('TourSecure'),
+          backgroundColor: Colors.transparent,
+          // ensure the menu button always works (useful on web/transparent bars)
+          leading: Builder(
+            builder: (ctx) => IconButton(
+              icon: const Icon(Icons.menu),
+              onPressed: () => Scaffold.of(ctx).openDrawer(),
+            ),
+          ),
+        ),
         body: LayoutBuilder(
           builder: (context, constraints) {
             final isWide = constraints.maxWidth > 760;
@@ -294,8 +303,9 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
             final userCard = _GlassCard(
               child: ListTile(
                 leading: const Icon(Icons.shield, color: Colors.white),
-                title: const Text('Your Safety Score', style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
-                subtitle: Text(user?.email ?? '', style: TextStyle(color: Colors.white70)),
+                title: const Text('Your Safety Score',
+                    style: TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+                subtitle: Text(user?.email ?? '', style: const TextStyle(color: Colors.white70)),
                 trailing: const _ScoreBadge(score: 50),
               ),
             );
@@ -320,7 +330,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
                         ),
                       ),
                       const SizedBox(width: 16),
-                      SizedBox(width: 320, child: areaCard),
+                      const SizedBox(width: 320, child: _GlassCard(child: _AreaSafety())),
                     ],
                   ),
                 ),
@@ -366,7 +376,11 @@ class _SosButton extends StatelessWidget {
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 boxShadow: [
-                  BoxShadow(color: Colors.redAccent.withOpacity(0.35), blurRadius: 60 + v * 30, spreadRadius: 6 + v * 6),
+                  BoxShadow(
+                    color: Colors.redAccent.withOpacity(0.35),
+                    blurRadius: 60 + v * 30,
+                    spreadRadius: 6 + v * 6,
+                  ),
                 ],
               ),
             );
@@ -383,9 +397,11 @@ class _SosButton extends StatelessWidget {
               foregroundColor: Colors.white,
             ),
             onPressed: () {
-              ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('SOS triggered (stub)!')));
+              ScaffoldMessenger.of(context)
+                  .showSnackBar(const SnackBar(content: Text('SOS triggered (stub)!')));
             },
-            child: const Text('S.O.S', style: TextStyle(fontSize: 36, fontWeight: FontWeight.w800, letterSpacing: 2)),
+            child: const Text('S.O.S',
+                style: TextStyle(fontSize: 36, fontWeight: FontWeight.w800, letterSpacing: 2)),
           ),
         ),
       ],
@@ -461,6 +477,8 @@ class _GlassCard extends StatelessWidget {
 }
 
 class _MainDrawer extends StatelessWidget {
+  const _MainDrawer();
+
   @override
   Widget build(BuildContext context) {
     final user = Supabase.instance.client.auth.currentUser;
@@ -483,7 +501,7 @@ class _MainDrawer extends StatelessWidget {
                 children: [
                   _navTile(context, Icons.map, 'Heatmap', const HeatmapPage()),
                   _navTile(context, Icons.rate_review, 'Reviews', const ReviewsPage()),
-                  _navTile(context, Icons.report, 'eFIR', const EFIRPage()),
+                  _navTile(context, Icons.assignment, 'e-FIR', const EFIRPage()), // ✅ e-FIR
                   _navTile(context, Icons.list_alt, 'Itinerary', const ItineraryPage()),
                   _navTile(context, Icons.badge, 'Digital ID', const DigitalIDPage()),
                   _navTile(context, Icons.info, 'About Us', const AboutPage()),
@@ -493,7 +511,10 @@ class _MainDrawer extends StatelessWidget {
             ListTile(
               leading: const Icon(Icons.logout),
               title: const Text('Sign Out'),
-              onTap: () async { await Supabase.instance.client.auth.signOut(); if (context.mounted) Navigator.of(context).pop(); },
+              onTap: () async {
+                await Supabase.instance.client.auth.signOut();
+                if (context.mounted) Navigator.of(context).pop();
+              },
             ),
           ],
         ),
@@ -506,7 +527,11 @@ class _MainDrawer extends StatelessWidget {
       leading: Icon(icon),
       title: Text(label),
       trailing: const Icon(Icons.chevron_right),
-      onTap: () { Navigator.of(context).pop(); Navigator.of(context).push(MaterialPageRoute(builder: (_) => page)); },
+      onTap: () {
+        Navigator.of(context).pop(); // close drawer
+        // Use pushReplacement so we don't stack multiple pages when navigating via the drawer
+        Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => page));
+      },
     );
   }
 }
