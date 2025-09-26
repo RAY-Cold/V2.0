@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../home/home_page.dart';                 // 👈 import HomePage
 import '../features/efir/data/efir_dto.dart';
 import '../services/efir_service.dart';
 
@@ -146,8 +147,7 @@ class _EFIRPageState extends State<EFIRPage> {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
 
       _clearDraft();
-      // Realtime will refresh; call manual refresh for immediate update anyway.
-      await _loadReports();
+      await _loadReports(); // realtime also refreshes
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Submit failed: $e')));
@@ -277,9 +277,24 @@ class _EFIRPageState extends State<EFIRPage> {
           ])
         : Column(children: [formCard, const SizedBox(height: 12), guidelinesCard]);
 
-    // ---- SCROLL FIX: CustomScrollView + Slivers ----
+    // ---- SCROLL FIX + GO BACK BUTTON ----
     return Scaffold(
-      appBar: AppBar(title: const Text('e-FIR')),
+      appBar: AppBar(
+        title: const Text('e-FIR'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new),
+          tooltip: 'Back to Home',
+          onPressed: () {
+            if (Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+            } else {
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute(builder: (_) => const HomePage()),
+              );
+            }
+          },
+        ),
+      ),
       body: RefreshIndicator(
         onRefresh: _loadReports,
         child: CustomScrollView(
@@ -337,16 +352,11 @@ class _EFIRPageState extends State<EFIRPage> {
   Widget _reportTile(EfirReportDto r) {
     Color statusColor(String s) {
       switch (s) {
-        case 'Pending':
-          return Colors.orange;
-        case 'In Review':
-          return Colors.blue;
-        case 'Resolved':
-          return Colors.green;
-        case 'Rejected':
-          return Colors.red;
-        default:
-          return Colors.grey;
+        case 'Pending': return Colors.orange;
+        case 'In Review': return Colors.blue;
+        case 'Resolved': return Colors.green;
+        case 'Rejected': return Colors.red;
+        default: return Colors.grey;
       }
     }
 
@@ -366,8 +376,8 @@ class _EFIRPageState extends State<EFIRPage> {
                 height: 64,
                 child: ListView.separated(
                   scrollDirection: Axis.horizontal,
-                  shrinkWrap: true, // <- friendlier to parent scroll
-                  physics: const ClampingScrollPhysics(), // <- prevents scroll conflicts
+                  shrinkWrap: true,
+                  physics: const ClampingScrollPhysics(),
                   itemCount: r.attachments.length,
                   separatorBuilder: (_, __) => const SizedBox(width: 6),
                   itemBuilder: (_, i) => ClipRRect(
@@ -392,8 +402,7 @@ class _EFIRPageState extends State<EFIRPage> {
                 color: statusColor(r.status).withOpacity(0.12),
                 borderRadius: BorderRadius.circular(999),
               ),
-              child: Text(r.status,
-                  style: TextStyle(color: statusColor(r.status), fontWeight: FontWeight.w600)),
+              child: Text(r.status, style: TextStyle(color: statusColor(r.status), fontWeight: FontWeight.w600)),
             ),
             if (r.referenceNo.isNotEmpty)
               Padding(
