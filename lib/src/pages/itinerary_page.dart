@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+/*import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../home/home_page.dart'; // back target
@@ -564,5 +564,419 @@ class ListToCsvConverter {
     }
 
     return rows.map((r) => r.map(esc).join(',')).join('\n');
+  }
+}
+*/
+import 'dart:ui';
+import 'package:flutter/material.dart';
+import 'package:supabase_flutter/supabase_flutter.dart';
+
+import '../theme/app_theme.dart';
+import '../features/itinerary/data/itinerary_dto.dart';
+import '../services/itinerary_service.dart';
+import '../home/home_page.dart';
+
+class ItineraryPage extends StatefulWidget {
+  const ItineraryPage({super.key});
+  @override
+  State<ItineraryPage> createState() => _ItineraryPageState();
+}
+
+class _ItineraryPageState extends State<ItineraryPage> {
+  late final ItineraryService _service;
+
+  List<ItineraryDto> _all = [];
+  List<ItineraryDto> _visible = [];
+  bool _loading = true;
+
+  // Filters
+  String _query = '';
+  bool _showUpcomingOnly = true;
+  bool _ascending = true;
+
+  // Form
+  final _title = TextEditingController();
+  final _location = TextEditingController();
+  final _notes = TextEditingController();
+  DateTime? _start;
+  DateTime? _end;
+  bool _submitting = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _service = ItineraryService(Supabase.instance.client);
+    _load();
+  }
+
+  @override
+  void dispose() {
+    _title.dispose();
+    _location.dispose();
+    _notes.dispose();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final items = await _service.listMine(limit: 200);
+      setState(() {
+        _all = items;
+      });
+      _applyFilters();
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  void _applyFilters() {
+    final now = DateTime.now();
+    final q = _query.trim().toLowerCase();
+    List<ItineraryDto> list = List.of(_all);
+
+    list = list.where((t) {
+      if (_showUpcomingOnly && t.endDate.isBefore(DateTime(now.year, now.month, now.day))) return false;
+      if (q.isEmpty) return true;
+      final hay = '${t.title} ${t.location ?? ''} ${t.details ?? ''}'.toLowerCase();
+      return hay.contains(q);
+    }).toList();
+
+    list.sort((a, b) => _ascending ? a.startDate.compareTo(b.startDate) : b.startDate.compareTo(a.startDate));
+    setState(() => _visible = list);
+  }
+
+  Future<void> _pickStart() async {
+    final now = DateTime.now();
+    final res = await showDatePicker(
+      context: context,
+      firstDate: DateTime(now.year, now.month, now.day), // no past dates
+      lastDate: DateTime(now.year + 5),
+      initialDate: _start ?? DateTime(now.year, now.month, now.day),
+    );
+    if (res != null) setState(() => _start = res);
+  }
+
+  Future<void> _pickEnd() async {
+    final now = DateTime.now();
+    final first = _start ?? DateTime(now.year, now.month, now.day);
+    final res = await showDatePicker(
+      context: context,
+      firstDate: first, // not before start & not in the past
+      lastDate: DateTime(now.year + 5),
+      initialDate: _end ?? first,
+    );
+    if (res != null) setState(() => _end = res);
+  }
+
+  Future<void> _submit() async {
+    if (_title.text.trim().isEmpty) {
+      _snack('Add a title');
+      return;
+    }
+    if (_start == null || _end == null) {
+      _snack('Pick start and end date');
+      return;
+    }
+    setState(() => _submitting = true);
+    try {
+      await _service.create(
+        title: _title.text.trim(),
+        startDate: _start!,
+        endDate: _end!,
+        location: _location.text.trim().isEmpty ? null : _location.text.trim(),
+        details: _notes.text.trim().isEmpty ? null : _notes.text.trim(),
+      );
+      _title.clear();
+      _location.clear();
+      _notes.clear();
+      _start = null;
+      _end = null;
+      await _load();
+    } catch (e) {
+      _snack(e.toString());
+    } finally {
+      setState(() => _submitting = false);
+    }
+  }
+
+  void _snack(String s) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(s)));
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: kBgGradient),
+      ),
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          title: const Text('Itinerary'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => const HomePage())),
+          ),
+        ),
+        body: RefreshIndicator(
+          onRefresh: _load,
+          child: SingleChildScrollView(
+            physics: const AlwaysScrollableScrollPhysics(),
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                // Create
+                _GlassCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('Create a plan',
+                            style: Theme.of(context).textTheme.titleMedium?.copyWith(color: Colors.white, fontWeight: FontWeight.w700)),
+                        const SizedBox(height: 12),
+                        _glassField(controller: _title, label: 'Title'),
+                        const SizedBox(height: 10),
+                        Row(children: [
+                          Expanded(child: _glassField(controller: _location, label: 'Location (optional)')),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _dateField(
+                              label: 'Start date',
+                              value: _start == null ? 'Pick date' : _fmtDate(_start!),
+                              onTap: _pickStart,
+                            ),
+                          ),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: _dateField(
+                              label: 'End date',
+                              value: _end == null ? 'Pick date' : _fmtDate(_end!),
+                              onTap: _pickEnd,
+                            ),
+                          ),
+                        ]),
+                        const SizedBox(height: 10),
+                        _glassField(controller: _notes, label: 'Notes (optional)', minLines: 3, maxLines: 5),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: FilledButton(
+                            onPressed: _submitting ? null : _submit,
+                            child: _submitting
+                                ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                                : const Text('Add'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // Filters
+                _GlassCard(
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: _searchField(
+                            onChanged: (v) {
+                              setState(() => _query = v);
+                              _applyFilters();
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 10),
+                        FilterChip(
+                          selected: _showUpcomingOnly,
+                          onSelected: (v) {
+                            setState(() => _showUpcomingOnly = v);
+                            _applyFilters();
+                          },
+                          label: const Text('Upcoming only'),
+                        ),
+                        const SizedBox(width: 8),
+                        FilterChip(
+                          selected: _ascending,
+                          onSelected: (v) {
+                            setState(() => _ascending = v);
+                            _applyFilters();
+                          },
+                          label: Text(_ascending ? 'Ascending' : 'Descending'),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // List
+                if (_loading)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 40),
+                    child: CircularProgressIndicator(),
+                  )
+                else if (_visible.isEmpty)
+                  _GlassCard(
+                    child: Padding(
+                      padding: const EdgeInsets.all(12.0),
+                      child: Text('No itineraries yet', style: TextStyle(color: Colors.white.withOpacity(0.9))),
+                    ),
+                  )
+                else
+                  ListView.separated(
+                    physics: const NeverScrollableScrollPhysics(),
+                    shrinkWrap: true,
+                    itemCount: _visible.length,
+                    separatorBuilder: (_, __) => const SizedBox(height: 10),
+                    itemBuilder: (_, i) {
+                      final t = _visible[i];
+                      return _GlassCard(
+                        child: ListTile(
+                          title: Text(t.title, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              const SizedBox(height: 4),
+                              Text('${_fmtDate(t.startDate)} → ${_fmtDate(t.endDate)}',
+                                  style: const TextStyle(color: Colors.white70)),
+                              if (t.location != null && t.location!.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 4),
+                                  child: Text(t.location!, style: const TextStyle(color: Colors.white70)),
+                                ),
+                              if (t.details != null && t.details!.isNotEmpty)
+                                Padding(
+                                  padding: const EdgeInsets.only(top: 6),
+                                  child: Text(t.details!, style: const TextStyle(color: Colors.white)),
+                                ),
+                            ],
+                          ),
+                        ),
+                      );
+                    },
+                  ),
+
+                const SizedBox(height: 32),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _fmtDate(DateTime d) => '${d.year}-${d.month.toString().padLeft(2, '0')}-${d.day.toString().padLeft(2, '0')}';
+
+  Widget _dateField({required String label, required String value, required VoidCallback onTap}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        decoration: _box,
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(label, style: const TextStyle(color: Colors.white70, fontSize: 12)),
+            const SizedBox(height: 4),
+            Text(value, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w600)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _glassField({
+    required TextEditingController controller,
+    required String label,
+    int minLines = 1,
+    int? maxLines,
+  }) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(12),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+        child: TextField(
+          controller: controller,
+          minLines: minLines,
+          maxLines: maxLines ?? 1,
+          style: const TextStyle(color: Colors.white),
+          decoration: InputDecoration(
+            labelText: label,
+            labelStyle: const TextStyle(color: Colors.white),
+            filled: true,
+            fillColor: Colors.white.withOpacity(0.08),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.white.withOpacity(0.12)),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(color: Colors.white.withOpacity(0.35)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _searchField({required ValueChanged<String> onChanged}) {
+    return TextField(
+      style: const TextStyle(color: Colors.white),
+      onChanged: onChanged,
+      decoration: InputDecoration(
+        hintText: 'Search…',
+        hintStyle: const TextStyle(color: Colors.white70),
+        prefixIcon: const Icon(Icons.search, color: Colors.white),
+        filled: true,
+        fillColor: Colors.white.withOpacity(0.08),
+        border: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.white.withOpacity(0.12)),
+        ),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.white.withOpacity(0.12)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.white.withOpacity(0.35)),
+        ),
+      ),
+    );
+  }
+
+  BoxDecoration get _box => BoxDecoration(
+        color: Colors.white.withOpacity(0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.12)),
+      );
+}
+
+class _GlassCard extends StatelessWidget {
+  final Widget child;
+  const _GlassCard({required this.child});
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(18),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 16, sigmaY: 16),
+        child: Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.08),
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: Colors.white.withOpacity(0.12)),
+          ),
+          child: child,
+        ),
+      ),
+    );
   }
 }
