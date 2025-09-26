@@ -1,5 +1,6 @@
 import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import '../theme/app_theme.dart';
 
@@ -18,19 +19,29 @@ class _AuthScreenState extends State<AuthScreen> {
   bool _loading = false;
 
   @override
-  void dispose() { _email.dispose(); _password.dispose(); _name.dispose(); super.dispose(); }
+  void dispose() {
+    _email.dispose();
+    _password.dispose();
+    _name.dispose();
+    super.dispose();
+  }
 
   Future<void> _handleAuth() async {
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
       if (isSignIn) {
         await Supabase.instance.client.auth.signInWithPassword(
-          email: _email.text.trim(), password: _password.text,
+          email: _email.text.trim(),
+          password: _password.text,
         );
         await _ensureProfileExists();
       } else {
         await Supabase.instance.client.auth.signUp(
-          email: _email.text.trim(), password: _password.text,
+          email: _email.text.trim(),
+          password: _password.text,
           data: {'full_name': _name.text.trim()},
         );
         if (mounted) {
@@ -39,35 +50,66 @@ class _AuthScreenState extends State<AuthScreen> {
           ));
         }
       }
-    } on AuthException catch (e) { setState(() => _error = e.message); }
-    catch (e) { setState(() => _error = 'Unexpected error: $e'); }
-    finally { if (mounted) setState(() => _loading = false); }
+    } on AuthException catch (e) {
+      setState(() => _error = e.message);
+    } catch (e) {
+      setState(() => _error = 'Unexpected error: $e');
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
   }
 
   Future<void> _ensureProfileExists() async {
     final user = Supabase.instance.client.auth.currentUser;
     if (user == null) return;
     final existing = await Supabase.instance.client
-      .from('profiles').select('id').eq('id', user.id).maybeSingle();
+        .from('profiles')
+        .select('id')
+        .eq('id', user.id)
+        .maybeSingle();
     if (existing == null) {
       await Supabase.instance.client.from('profiles').insert({
         'id': user.id,
         'email': user.email,
         'full_name': _name.text.trim().isNotEmpty
-            ? _name.text.trim() : (user.userMetadata?['full_name'] ?? ''),
+            ? _name.text.trim()
+            : (user.userMetadata?['full_name'] ?? ''),
       });
     }
   }
+
+  InputDecoration _dec(String label) => InputDecoration(
+        labelText: label,
+        labelStyle: const TextStyle(color: Colors.white70),
+        hintStyle: const TextStyle(color: Colors.white60),
+        filled: true,
+        fillColor: Colors.white.withOpacity(0.10),
+        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+        enabledBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.white.withOpacity(0.18)),
+        ),
+        focusedBorder: OutlineInputBorder(
+          borderRadius: BorderRadius.circular(12),
+          borderSide: BorderSide(color: Colors.white.withOpacity(0.50)),
+        ),
+      );
 
   @override
   Widget build(BuildContext context) {
     return Container(
       decoration: const BoxDecoration(
-        gradient: LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: kBgGradient),
+        gradient:
+            LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: kBgGradient),
       ),
       child: Scaffold(
         backgroundColor: Colors.transparent,
-        appBar: AppBar(backgroundColor: Colors.transparent, title: const Text('TourSecure')),
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          title: const Text('TourSecure'),
+          foregroundColor: Colors.white, // <- make title & icons white
+          systemOverlayStyle: SystemUiOverlayStyle.light,
+        ),
         body: Center(
           child: Padding(
             padding: const EdgeInsets.all(20.0),
@@ -86,6 +128,7 @@ class _AuthScreenState extends State<AuthScreen> {
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
+                      // tabs
                       Container(
                         decoration: BoxDecoration(
                           color: Colors.white.withOpacity(0.08),
@@ -99,24 +142,48 @@ class _AuthScreenState extends State<AuthScreen> {
                         ),
                       ),
                       const SizedBox(height: 18),
+
                       if (!isSignIn) ...[
-                        TextField(controller: _name, textCapitalization: TextCapitalization.words, decoration: const InputDecoration(labelText: 'Full name')),
+                        TextField(
+                          controller: _name,
+                          textCapitalization: TextCapitalization.words,
+                          style: const TextStyle(color: Colors.white),
+                          cursorColor: Colors.white,
+                          decoration: _dec('Full name'),
+                        ),
                         const SizedBox(height: 12),
                       ],
-                      TextField(controller: _email, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: 'Email')),
+
+                      TextField(
+                        controller: _email,
+                        keyboardType: TextInputType.emailAddress,
+                        style: const TextStyle(color: Colors.white),
+                        cursorColor: Colors.white,
+                        decoration: _dec('Email'),
+                      ),
                       const SizedBox(height: 12),
-                      TextField(controller: _password, obscureText: true, decoration: const InputDecoration(labelText: 'Password')),
+
+                      TextField(
+                        controller: _password,
+                        obscureText: true,
+                        style: const TextStyle(color: Colors.white),
+                        cursorColor: Colors.white,
+                        decoration: _dec('Password'),
+                      ),
+
                       if (_error != null) ...[
                         const SizedBox(height: 12),
-                        Text(_error!, style: const TextStyle(color: Colors.redAccent)),
+                        Text(_error!, style: const TextStyle(color: Color(0xFFFF8A80))),
                       ],
+
                       const SizedBox(height: 16),
                       SizedBox(
                         width: double.infinity,
                         child: FilledButton(
                           onPressed: _loading ? null : _handleAuth,
                           child: _loading
-                              ? const SizedBox(height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                              ? const SizedBox(
+                                  height: 18, width: 18, child: CircularProgressIndicator(strokeWidth: 2))
                               : Text(isSignIn ? 'Sign In' : 'Create Account'),
                         ),
                       ),
@@ -144,7 +211,13 @@ class _AuthScreenState extends State<AuthScreen> {
             borderRadius: BorderRadius.circular(12),
           ),
           alignment: Alignment.center,
-          child: Text(label, style: TextStyle(fontWeight: FontWeight.w600, color: selected ? Colors.white : Colors.white.withOpacity(0.85))),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontWeight: FontWeight.w600,
+              color: selected ? Colors.white : Colors.white.withOpacity(0.85),
+            ),
+          ),
         ),
       ),
     );

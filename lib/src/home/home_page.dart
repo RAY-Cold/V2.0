@@ -169,15 +169,21 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         backgroundColor: Colors.transparent,
         drawer: const _MainDrawer(), // left hamburger
         appBar: AppBar(
-          title: const Text('TourSecure'),
-          backgroundColor: Colors.transparent,
-          leading: Builder(
-            builder: (ctx) => IconButton(
-              icon: const Icon(Icons.menu),
-              onPressed: () => Scaffold.of(ctx).openDrawer(),
-            ),
-          ),
-        ),
+  title: const Text('TourSecure'),
+  backgroundColor: Colors.transparent,
+  // make all app bar icons & text white
+  foregroundColor: Colors.white,
+  iconTheme: const IconThemeData(color: Colors.white),
+  // keep your working hamburger even on transparent bars
+  leading: Builder(
+    builder: (ctx) => IconButton(
+      icon: const Icon(Icons.menu, color: Colors.white),
+      onPressed: () => Scaffold.of(ctx).openDrawer(),
+      tooltip: MaterialLocalizations.of(ctx).openAppDrawerTooltip,
+    ),
+  ),
+),
+
         body: LayoutBuilder(
           builder: (context, constraints) {
             final isWide = constraints.maxWidth > 760;
