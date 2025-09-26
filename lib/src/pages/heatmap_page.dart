@@ -7,13 +7,16 @@ import 'package:geolocator/geolocator.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
-/// HeatmapPage (Population Density)
+import '../home/home_page.dart';
+
+/// HeatmapPage (Population Density around User)
 /// - Requests location permission
-/// - Centers map on user
+/// - Prefers a fresh GPS fix (configurable last-known fallback)
 /// - Fits camera to a 10 km radius circle (after map is ready)
 /// - Draws the 10 km boundary
-/// - Renders heat overlay from Supabase population_cells within radius
+/// - Tries Supabase `population_cells` for heat; falls back to synthetic heat
 /// - Computes "Area Safety Score" from density (lower density => higher score)
+
 class HeatmapPage extends StatefulWidget {
   const HeatmapPage({super.key});
 
@@ -22,6 +25,9 @@ class HeatmapPage extends StatefulWidget {
 }
 
 class _HeatmapPageState extends State<HeatmapPage> {
+  // Toggle this to allow using last-known if a fresh fix times out.
+  static const bool _kAllowLastKnownFallback = false;
+
   final MapController _mapController = MapController();
 
   LatLng? _center;
@@ -61,7 +67,6 @@ class _HeatmapPageState extends State<HeatmapPage> {
       _permissionDenied = false;
       _serviceDisabled = false;
       _locError = null;
-      // don't reset _mapReady; it's controlled by the widget lifecycle
     });
 
     try {
@@ -75,13 +80,11 @@ class _HeatmapPageState extends State<HeatmapPage> {
       }
 
       var perm = await Geolocator.checkPermission();
-      if (perm == LocationPermission.denied ||
-          perm == LocationPermission.deniedForever) {
+      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
         perm = await Geolocator.requestPermission();
       }
 
-      if (perm == LocationPermission.denied ||
-          perm == LocationPermission.deniedForever) {
+      if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
         setState(() {
           _permissionDenied = true;
           _loading = false;
@@ -89,26 +92,37 @@ class _HeatmapPageState extends State<HeatmapPage> {
         return;
       }
 
-      // Try quick last known first, then a precise timed attempt
-      Position? last = await Geolocator.getLastKnownPosition();
-      Position pos = last ??
-          await Geolocator.getCurrentPosition(
-            desiredAccuracy: LocationAccuracy.high,
-            timeLimit: const Duration(seconds: 12),
-          );
+      // Prefer a fresh, precise fix.
+      Position? pos;
+      try {
+        pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+          timeLimit: const Duration(seconds: 12),
+        );
+      } on TimeoutException {
+        if (_kAllowLastKnownFallback) {
+          pos = await Geolocator.getLastKnownPosition();
+        } else {
+          rethrow;
+        }
+      }
+
+      if (pos == null) {
+        throw TimeoutException('Could not acquire a current location fix.');
+      }
 
       final c = LatLng(pos.latitude, pos.longitude);
       setState(() {
         _center = c;
       });
 
-      // Load heat data from Supabase; fallback if empty
+      // Load heat data from Supabase; fallback to synthetic if empty or on error
       await _loadHeatData(c, _radiusMeters);
 
       setState(() {
         _safetyScore = _estimateSafetyScoreFromDensity(_heatData);
         _loading = false;
-        _pendingFit = true; // we want to fit as soon as map is ready
+        _pendingFit = true; // fit as soon as map is ready
       });
 
       _maybeFitToRadius(); // in case map is already ready
@@ -225,7 +239,7 @@ class _HeatmapPageState extends State<HeatmapPage> {
   /// Synthetic fallback if no data / error (visual demo only)
   List<WeightedLatLng> _buildSyntheticHeat(LatLng c, double meters) {
     final pts = <WeightedLatLng>[];
-    const samples = 400; // density vs perf
+    const samples = 420; // density vs perf
     final rand = math.Random(42);
 
     for (var i = 0; i < samples; i++) {
@@ -246,7 +260,7 @@ class _HeatmapPageState extends State<HeatmapPage> {
 
       // weight: stronger near center (just for visual softness)
       final w = (1.0 - rUnit) * 0.9 + rand.nextDouble() * 0.1;
-      pts.add(WeightedLatLng(p, w));
+      pts.add(WeightedLatLng(p, w.clamp(0.05, 1.0)));
     }
     return pts;
   }
@@ -288,19 +302,26 @@ class _HeatmapPageState extends State<HeatmapPage> {
   int _estimateSafetyScoreFromDensity(List<WeightedLatLng> pts) {
     if (pts.isEmpty) return 50;
     // Average weight (0..1) where 1 is highest density; invert so sparse = high score
-    final avg =
-        pts.map((e) => e.intensity).fold<double>(0.0, (a, b) => a + b) /
-            pts.length;
+    final avg = pts.map((e) => e.intensity).fold<double>(0.0, (a, b) => a + b) / pts.length;
     final score = ((1.0 - avg) * 100).round();
     return score.clamp(1, 99);
   }
 
   @override
   Widget build(BuildContext context) {
-    final center = _center ?? const LatLng(20.5937, 78.9629); // India fallback
-
+    // No arbitrary fallback position; show map only when we have a center.
     return Scaffold(
-      appBar: AppBar(title: const Text('Heatmap')),
+      appBar: AppBar(
+        title: const Text('Heatmap'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (_) => const HomePage()),
+            );
+          },
+        ),
+      ),
       body: Stack(
         children: [
           if (_loading)
@@ -318,71 +339,62 @@ class _HeatmapPageState extends State<HeatmapPage> {
             FlutterMap(
               mapController: _mapController,
               options: MapOptions(
-                initialCenter: center,
+                initialCenter: _center!,
                 initialZoom: 12,
                 onMapReady: () {
                   _mapReady = true;
                   _maybeFitToRadius();
                 },
-                interactionOptions:
-                    const InteractionOptions(flags: InteractiveFlag.all),
+                interactionOptions: const InteractionOptions(flags: InteractiveFlag.all),
               ),
               children: [
                 // Base map tiles
                 TileLayer(
-                  urlTemplate:
-                      'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  urlTemplate: 'https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',
                   subdomains: const ['a', 'b', 'c'],
                   userAgentPackageName: 'toursecure',
                 ),
 
-                // Heat overlay (population density)
-                if (_center != null)
-                  HeatMapLayer(
-                    heatMapDataSource: InMemoryHeatMapDataSource(
-                      data: _heatData,
-                    ),
-                    heatMapOptions: HeatMapOptions(
-                      // NOTE: no 'const' here because keys are doubles
-                      gradient: {
-                        0.0: Colors.green,
-                        0.5: Colors.yellow,
-                        1.0: Colors.red,
-                      },
-                      radius: 35,
-                      blurFactor: 0.5,   // replaces 'blur'
-                      minOpacity: 0.15,
-                      layerOpacity: 0.95, // replaces 'maxOpacity'
-                    ),
-                    reset: _heatRebuild.stream,
+                // Heat overlay (Supabase or synthetic)
+                HeatMapLayer(
+                  heatMapDataSource: InMemoryHeatMapDataSource(
+                    data: _heatData,
                   ),
+                  heatMapOptions: HeatMapOptions(
+                    gradient: {
+                      0.0: Colors.green,
+                      0.5: Colors.yellow,
+                      1.0: Colors.red,
+                    },
+                    radius: 35,
+                    blurFactor: 0.5,   // replaces 'blur'
+                    minOpacity: 0.15,
+                    layerOpacity: 0.95, // replaces 'maxOpacity'
+                  ),
+                  reset: _heatRebuild.stream,
+                ),
 
                 // Circle boundary (10 km)
                 PolygonLayer(
                   polygons: [
-                    if (_center != null)
-                      Polygon(
-                        points: _circlePoly(center, _radiusMeters),
-                        color: Theme.of(context)
-                            .colorScheme
-                            .primary
-                            .withOpacity(0.08),
-                        borderColor: Theme.of(context).colorScheme.primary,
-                        borderStrokeWidth: 2,
-                      ),
+                    Polygon(
+                      points: _circlePoly(_center!, _radiusMeters),
+                      color: Theme.of(context).colorScheme.primary.withOpacity(0.08),
+                      borderColor: Theme.of(context).colorScheme.primary,
+                      borderStrokeWidth: 2,
+                    ),
                   ],
                 ),
 
                 // Current location marker
                 MarkerLayer(
                   markers: [
-                    if (_center != null)
-                      Marker(
-                        point: center,
-                        width: 40,
-                        height: 40,
-                        child: const _CenterMarker(),
-                      ),
+                    Marker(
+                      point: _center!,
+                      width: 40,
+                      height: 40,
+                      child: const _CenterMarker(),
+                    ),
                   ],
                 ),
               ],

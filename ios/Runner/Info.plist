@@ -3,6 +3,9 @@
 <plist version="1.0">
 <dict>
 	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>We need your location to show a heatmap and area safety around you.</string>
+
+	<key>NSLocationWhenInUseUsageDescription</key>
 	<string>This app needs your location to show a 10 km safety map and score.</string>
 
 	<key>CFBundleDevelopmentRegion</key>
