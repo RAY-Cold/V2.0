@@ -1,252 +1,13 @@
-/*import 'package:flutter/material.dart';
-import 'package:supabase_flutter/supabase_flutter.dart';
-
-import '../pages/heatmap_page.dart';
-import '../pages/reviews_page.dart';
-import '../pages/efir_page.dart';
-import '../pages/itinerary_page.dart';
-import '../pages/digital_id_page.dart';
-import '../pages/about_page.dart';
-
-class HomePage extends StatefulWidget {
-  const HomePage({super.key});
-
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
-  late final AnimationController _pulse;
-  late final Animation<double> _scale;
-
-  @override
-  void initState() {
-    super.initState();
-    _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 2))
-      ..repeat(reverse: true);
-    _scale = Tween<double>(begin: 0.95, end: 1.05).animate(
-      CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
-    );
-  }
-
-  @override
-  void dispose() {
-    _pulse.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final user = Supabase.instance.client.auth.currentUser;
-
-    return Scaffold(
-      // Use LEFT drawer (not endDrawer) so the hamburger appears top-left automatically.
-      drawer: _MainDrawer(),
-      appBar: AppBar(
-        title: const Text('TourSecure'),
-        // No actions/leading needed—AppBar shows a working hamburger when `drawer:` is set.
-      ),
-      // Make the whole page scrollable on small screens.
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          final isWide = constraints.maxWidth > 700;
-
-          final sosButton = Center(
-            child: ScaleTransition(
-              scale: _scale,
-              child: ElevatedButton(
-                style: ElevatedButton.styleFrom(
-                  shape: const CircleBorder(),
-                  minimumSize: const Size(220, 220),
-                  padding: EdgeInsets.zero,
-                  backgroundColor: Colors.red,
-                  foregroundColor: Colors.white,
-                ),
-                onPressed: () {
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    const SnackBar(content: Text('SOS triggered (stub)!')),
-                  );
-                },
-                child: const Text(
-                  'S.O.S',
-                  style: TextStyle(fontSize: 36, fontWeight: FontWeight.bold, letterSpacing: 2),
-                ),
-              ),
-            ),
-          );
-
-          final areaCard = const _AreaSafetyCard();
-
-          final userScoreCard = Card(
-            child: ListTile(
-              leading: const Icon(Icons.shield),
-              title: const Text('Your Safety Score'),
-              subtitle: Text(user?.email ?? ''),
-              trailing: const _ScoreBadge(score: 50), // placeholder
-            ),
-          );
-
-          // WIDE layout: SOS + right sidebar, with vertical scroll if needed.
-          if (isWide) {
-            return SingleChildScrollView(
-              padding: const EdgeInsets.all(16),
-              child: ConstrainedBox(
-                constraints: BoxConstraints(minHeight: constraints.maxHeight - 32),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    // Left: SOS + bottom user card
-                    Expanded(
-                      child: Column(
-                        children: [
-                          const SizedBox(height: 12),
-                          sosButton,
-                          const SizedBox(height: 24),
-                          userScoreCard,
-                          const SizedBox(height: 24),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 16),
-                    // Right: area safety sidebar
-                    SizedBox(
-                      width: 300,
-                      child: Column(
-                        children: [
-                          areaCard,
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }
-
-          // MOBILE layout: stacked and scrollable.
-          return SingleChildScrollView(
-            padding: const EdgeInsets.all(16),
-            child: Column(
-              children: [
-                areaCard,
-                const SizedBox(height: 24),
-                sosButton,
-                const SizedBox(height: 24),
-                userScoreCard,
-                const SizedBox(height: 24),
-              ],
-            ),
-          );
-        },
-      ),
-    );
-  }
-}
-
-class _AreaSafetyCard extends StatelessWidget {
-  const _AreaSafetyCard();
-  @override
-  Widget build(BuildContext context) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(16.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: const [
-            Text('Area Safety Score', style: TextStyle(fontWeight: FontWeight.bold)),
-            SizedBox(height: 8),
-            Text('Current area: (stubbed)'),
-            SizedBox(height: 12),
-            _ScoreBadge(score: 72), // placeholder
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ScoreBadge extends StatelessWidget {
-  final int score; // 0-100
-  const _ScoreBadge({required this.score});
-
-  @override
-  Widget build(BuildContext context) {
-    Color color;
-    if (score >= 75) {
-      color = Colors.green;
-    } else if (score >= 50) {
-      color = Colors.orange;
-    } else {
-      color = Colors.red;
-    }
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      decoration: BoxDecoration(
-        color: color.withOpacity(0.15),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: color.withOpacity(0.5)),
-      ),
-      child: Text(
-        '$score / 100',
-        style: TextStyle(color: color, fontWeight: FontWeight.bold),
-      ),
-    );
-  }
-}
-
-class _MainDrawer extends StatelessWidget {
-  @override
-  Widget build(BuildContext context) {
-    return Drawer(
-      child: SafeArea(
-        child: ListView(
-          padding: EdgeInsets.zero,
-          children: [
-            const DrawerHeader(
-              child: Text(
-                'Menu',
-                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
-              ),
-            ),
-            _navTile(context, Icons.map, 'Heatmap', const HeatmapPage()),
-            _navTile(context, Icons.rate_review, 'Reviews', const ReviewsPage()),
-            _navTile(context, Icons.report, 'eFIR', const EFIRPage()),
-            _navTile(context, Icons.list_alt, 'Itinerary', const ItineraryPage()),
-            _navTile(context, Icons.badge, 'Digital ID', const DigitalIDPage()),
-            _navTile(context, Icons.info, 'About Us', const AboutPage()),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.logout),
-              title: const Text('Sign Out'),
-              onTap: () async {
-                await Supabase.instance.client.auth.signOut();
-                if (context.mounted) Navigator.of(context).pop();
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  ListTile _navTile(BuildContext context, IconData icon, String label, Widget page) {
-    return ListTile(
-      leading: Icon(icon),
-      title: Text(label),
-      onTap: () {
-        Navigator.of(context).pop(); // close drawer
-        Navigator.of(context).push(MaterialPageRoute(builder: (_) => page));
-      },
-    );
-  }
-}
-*/import 'dart:ui';
+// lib/src/home/home_page.dart
+import 'dart:async';
+import 'dart:ui';
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
 import '../theme/app_theme.dart';
 import '../pages/pages.dart'; // barrel: heatmap_page.dart, reviews_page.dart, efir_page.dart, etc.
+import '../services/efir_service.dart'; // <-- for auto eFIR submit
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -257,21 +18,144 @@ class HomePage extends StatefulWidget {
 class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin {
   late final AnimationController _pulse;
   late final Animation<double> _scale;
+
+  // SOS / EFIR
+  late final EfirService _efirService;
+  Timer? _sosTimer;
+  bool _sosRunning = false;
 
   @override
   void initState() {
     super.initState();
     _pulse = AnimationController(vsync: this, duration: const Duration(seconds: 2))..repeat(reverse: true);
-    _scale = Tween<double>(begin: 0.96, end: 1.06).animate(
-      CurvedAnimation(parent: _pulse, curve: Curves.easeInOut),
-    );
+    _scale = Tween<double>(begin: 0.96, end: 1.06).animate(CurvedAnimation(parent: _pulse, curve: Curves.easeInOut));
+    _efirService = EfirService(Supabase.instance.client);
   }
 
   @override
   void dispose() {
+    _sosTimer?.cancel();
     _pulse.dispose();
     super.dispose();
   }
+
+  // ---------------- SOS flow ----------------
+
+  Future<void> _onSosPressed() async {
+    if (_sosRunning) return;
+    _sosRunning = true;
+
+    final cancelled = await _showSosCountdownDialog(); // true if user tapped Cancel
+    _sosRunning = false;
+
+    if (!mounted) return;
+    if (cancelled) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('SOS cancelled')));
+      return;
+    }
+    await _submitAutoEfir();
+  }
+
+  Future<bool> _showSosCountdownDialog() async {
+    // returns true if cancelled, false if countdown ended
+    final sec = ValueNotifier<int>(5);
+    final done = Completer<bool>();
+
+    _sosTimer?.cancel();
+    _sosTimer = Timer.periodic(const Duration(seconds: 1), (t) {
+      if (sec.value > 1) {
+        sec.value--;
+      } else {
+        t.cancel();
+        if (!done.isCompleted) done.complete(false);
+        if (Navigator.of(context, rootNavigator: true).canPop()) {
+          Navigator.of(context, rootNavigator: true).pop();
+        }
+      }
+    });
+
+    await showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (ctx) => WillPopScope(
+        onWillPop: () async => false,
+        child: AlertDialog(
+          title: const Text('Sending SOS…'),
+          content: ValueListenableBuilder<int>(
+            valueListenable: sec,
+            builder: (_, s, __) => Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text('Auto submit in', style: Theme.of(context).textTheme.bodyMedium),
+                const SizedBox(height: 8),
+                Text('$s', style: const TextStyle(fontSize: 42, fontWeight: FontWeight.w800)),
+                const SizedBox(height: 8),
+                const Text('Tap Cancel if this was accidental.'),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                _sosTimer?.cancel();
+                if (!done.isCompleted) done.complete(true); // cancelled
+                Navigator.of(ctx).pop();
+              },
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    return done.future;
+  }
+
+  Future<void> _submitAutoEfir() async {
+    // Try to include location (optional)
+    double? lat, lng;
+    try {
+      final enabled = await Geolocator.isLocationServiceEnabled();
+      if (enabled) {
+        var p = await Geolocator.checkPermission();
+        if (p == LocationPermission.denied) p = await Geolocator.requestPermission();
+        if (p != LocationPermission.denied && p != LocationPermission.deniedForever) {
+          final pos = await Geolocator.getCurrentPosition();
+          lat = pos.latitude;
+          lng = pos.longitude;
+        }
+      }
+    } catch (_) {}
+
+    try {
+      final now = DateTime.now().toLocal();
+
+      // Capture the created report so we can show a concrete reference/id
+      final created = await _efirService.create(
+        name: 'SOS Alert', // maps to title
+        contact: null,
+        description: 'Automatic SOS triggered from Home button at $now.',
+        lat: lat,
+        lng: lng,
+        files: const <EfirUploadable>[],
+      );
+
+      if (!mounted) return;
+
+      final ref = (created.referenceNo.isNotEmpty)
+          ? created.referenceNo
+          : (created.id?.toString() ?? '');
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(ref.isEmpty ? 'SOS submitted (Pending)' : 'SOS submitted: $ref')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Failed to submit SOS: $e')));
+    }
+  }
+
+  // ---------------- UI ----------------
 
   @override
   Widget build(BuildContext context) {
@@ -287,7 +171,6 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         appBar: AppBar(
           title: const Text('TourSecure'),
           backgroundColor: Colors.transparent,
-          // ensure the menu button always works (useful on web/transparent bars)
           leading: Builder(
             builder: (ctx) => IconButton(
               icon: const Icon(Icons.menu),
@@ -298,7 +181,7 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
         body: LayoutBuilder(
           builder: (context, constraints) {
             final isWide = constraints.maxWidth > 760;
-            final sos = _SosButton(scale: _scale);
+            final sos = _SosButton(scale: _scale, onPressed: _onSosPressed);
             final areaCard = const _GlassCard(child: _AreaSafety());
             final userCard = _GlassCard(
               child: ListTile(
@@ -359,7 +242,8 @@ class _HomePageState extends State<HomePage> with SingleTickerProviderStateMixin
 
 class _SosButton extends StatelessWidget {
   final Animation<double> scale;
-  const _SosButton({required this.scale});
+  final VoidCallback onPressed;
+  const _SosButton({required this.scale, required this.onPressed});
 
   @override
   Widget build(BuildContext context) {
@@ -396,10 +280,7 @@ class _SosButton extends StatelessWidget {
               backgroundColor: const Color(0xFFFF4D67),
               foregroundColor: Colors.white,
             ),
-            onPressed: () {
-              ScaffoldMessenger.of(context)
-                  .showSnackBar(const SnackBar(content: Text('SOS triggered (stub)!')));
-            },
+            onPressed: onPressed,
             child: const Text('S.O.S',
                 style: TextStyle(fontSize: 36, fontWeight: FontWeight.w800, letterSpacing: 2)),
           ),
@@ -501,7 +382,7 @@ class _MainDrawer extends StatelessWidget {
                 children: [
                   _navTile(context, Icons.map, 'Heatmap', const HeatmapPage()),
                   _navTile(context, Icons.rate_review, 'Reviews', const ReviewsPage()),
-                  _navTile(context, Icons.assignment, 'e-FIR', const EFIRPage()), // ✅ e-FIR
+                  _navTile(context, Icons.assignment, 'e-FIR', const EFIRPage()),
                   _navTile(context, Icons.list_alt, 'Itinerary', const ItineraryPage()),
                   _navTile(context, Icons.badge, 'Digital ID', const DigitalIDPage()),
                   _navTile(context, Icons.info, 'About Us', const AboutPage()),
@@ -529,7 +410,6 @@ class _MainDrawer extends StatelessWidget {
       trailing: const Icon(Icons.chevron_right),
       onTap: () {
         Navigator.of(context).pop(); // close drawer
-        // Use pushReplacement so we don't stack multiple pages when navigating via the drawer
         Navigator.of(context).pushReplacement(MaterialPageRoute(builder: (_) => page));
       },
     );
