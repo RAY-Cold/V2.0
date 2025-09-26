@@ -1,7 +1,7 @@
-import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 
+import '../home/home_page.dart'; // back target
 import '../features/itinerary/data/itinerary_dto.dart';
 import '../services/itinerary_service.dart';
 
@@ -100,12 +100,20 @@ class _ItineraryPageState extends State<ItineraryPage> {
   // ------------------- ADD FORM -------------------
   Future<void> _pickDate() async {
     final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final initial = (_date != null && !_isBeforeDay(_date!, today)) ? _date! : today;
+
     final picked = await showDatePicker(
       context: context,
-      initialDate: _date ?? now,
-      firstDate: DateTime(now.year - 2),
-      lastDate: DateTime(now.year + 5),
+      initialDate: initial,
+      firstDate: today, // 🚫 no past dates
+      lastDate: DateTime(today.year + 5),
+      selectableDayPredicate: (d) {
+        final day = DateTime(d.year, d.month, d.day);
+        return !_isBeforeDay(day, today); // disable past cells
+      },
     );
+
     if (picked != null) setState(() => _date = picked);
   }
 
@@ -116,9 +124,22 @@ class _ItineraryPageState extends State<ItineraryPage> {
 
   Future<void> _submit() async {
     if (!_formKey.currentState!.validate()) return;
+
+    // Guard: chosen date must be today or future
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final chosen = _date ?? today;
+    final chosenDay = DateTime(chosen.year, chosen.month, chosen.day);
+    if (_isBeforeDay(chosenDay, today)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Please pick today or a future date')),
+      );
+      return;
+    }
+
     setState(() => _saving = true);
     try {
-      final d = _date ?? DateTime.now();
+      final d = chosenDay;
       final created = await _service.create(
         title: _title.text.trim(),
         location: _location.text.trim().isEmpty ? null : _location.text.trim(),
@@ -176,11 +197,13 @@ class _ItineraryPageState extends State<ItineraryPage> {
 
   Future<void> _pickFrom() async {
     final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
     final picked = await showDatePicker(
       context: context,
-      initialDate: _from ?? now,
-      firstDate: DateTime(now.year - 2),
-      lastDate: DateTime(now.year + 5),
+      initialDate: _from != null && !_isBeforeDay(_from!, today) ? _from! : today,
+      firstDate: today, // filter "from" also not in the past (optional)
+      lastDate: DateTime(today.year + 5),
+      selectableDayPredicate: (d) => !_isBeforeDay(DateTime(d.year, d.month, d.day), today),
     );
     if (picked != null) {
       setState(() => _from = picked);
@@ -189,12 +212,16 @@ class _ItineraryPageState extends State<ItineraryPage> {
   }
 
   Future<void> _pickTo() async {
-    final base = _from ?? DateTime.now();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final base = _from != null && !_isBeforeDay(_from!, today) ? _from! : today;
+
     final picked = await showDatePicker(
       context: context,
-      initialDate: _to ?? base,
-      firstDate: DateTime(base.year - 1),
+      initialDate: _to != null && !_isBeforeDay(_to!, base) ? _to! : base,
+      firstDate: base, // "to" can't be before "from"
       lastDate: DateTime(base.year + 5),
+      selectableDayPredicate: (d) => !_isBeforeDay(DateTime(d.year, d.month, d.day), base),
     );
     if (picked != null) {
       setState(() => _to = picked);
@@ -312,7 +339,7 @@ class _ItineraryPageState extends State<ItineraryPage> {
               ),
             ),
             const SizedBox(height: 6),
-            const Text('Tip: Date is optional; you can still sort and export later.',
+            const Text('Tip: Past dates are disabled. Pick today or a future date.',
                 style: TextStyle(fontSize: 12, color: Colors.black54)),
           ]),
         ),
@@ -379,11 +406,26 @@ class _ItineraryPageState extends State<ItineraryPage> {
         : Column(children: [addCard, const SizedBox(height: 12), filtersCard]);
 
     return Scaffold(
-      appBar: AppBar(title: const Text('Itinerary')),
+      appBar: AppBar(
+        title: const Text('Itinerary'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back_ios_new),
+          tooltip: 'Back to Home',
+          onPressed: () {
+            if (Navigator.of(context).canPop()) {
+              Navigator.of(context).pop();
+            } else {
+              Navigator.of(context).pushReplacement(
+                MaterialPageRoute(builder: (_) => const HomePage()),
+              );
+            }
+          },
+        ),
+      ),
       body: RefreshIndicator(
         onRefresh: _refresh,
         child: CustomScrollView(
-          physics: const AlwaysScrollableScrollPhysics(), // <-- ensures scroll
+          physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             SliverToBoxAdapter(child: Padding(padding: const EdgeInsets.all(16), child: headerRow)),
             const SliverToBoxAdapter(child: SizedBox(height: 16)),
@@ -493,9 +535,14 @@ class _ItineraryPageState extends State<ItineraryPage> {
   }
 
   // ------------------- UTIL -------------------
-  String _fmtDate(DateTime d) => '${d.day.toString().padLeft(2, '0')}/'
-      '${d.month.toString().padLeft(2, '0')}/'
-      '${d.year}';
+  bool _isBeforeDay(DateTime a, DateTime b) {
+    final ad = DateTime(a.year, a.month, a.day);
+    final bd = DateTime(b.year, b.month, b.day);
+    return ad.isBefore(bd);
+  }
+
+  String _fmtDate(DateTime d) =>
+      '${d.day.toString().padLeft(2, '0')}/${d.month.toString().padLeft(2, '0')}/${d.year}';
 
   String _two(int v) => v < 10 ? '0$v' : '$v';
   String _fmtDateICS(DateTime d) => '${d.year}${_two(d.month)}${_two(d.day)}';
