@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
 import 'package:postgrest/postgrest.dart'; // ✅ Needed for PostgrestBuilder/Filter/Transform
+import '../home/home_page.dart';
 
 /// =======================================================
 /// Supabase DTO + Service
@@ -658,6 +659,15 @@ class _ReviewsPageState extends State<ReviewsPage> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Reviews'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () {
+            // Navigate back to Home
+            Navigator.of(context).pushReplacement(
+              MaterialPageRoute(builder: (_) => const HomePage()),
+            );
+          },
+        ),
       ),
       body: RefreshIndicator(
         onRefresh: _loadForSelectedPlace,

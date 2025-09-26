@@ -393,8 +393,24 @@ class _MainDrawer extends StatelessWidget {
               leading: const Icon(Icons.logout),
               title: const Text('Sign Out'),
               onTap: () async {
-                await Supabase.instance.client.auth.signOut();
-                if (context.mounted) Navigator.of(context).pop();
+                try {
+                  await Supabase.instance.client.auth.signOut();
+                } catch (e) {
+                  if (context.mounted) {
+                    ScaffoldMessenger.of(context).showSnackBar(
+                      SnackBar(content: Text('Sign out failed: $e')),
+                    );
+                  }
+                  return;
+                }
+                if (!context.mounted) return;
+
+                // Close the drawer (if open)
+                Navigator.of(context).pop();
+
+                // Navigate to the root route and clear history so the auth gate / login shows
+                // Make sure your MaterialApp routes map '/' to your splash/auth gate.
+                Navigator.of(context).pushNamedAndRemoveUntil('/', (route) => false);
               },
             ),
           ],
