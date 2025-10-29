@@ -247,7 +247,8 @@ class _SignInSignUpPageState extends State<SignInSignUpPage>
 import 'package:flutter/material.dart';
 import 'package:flutter_dotenv/flutter_dotenv.dart';
 import 'package:supabase_flutter/supabase_flutter.dart';
-
+import 'package:flutter/material.dart';
+import 'package:flutter/services.dart' show rootBundle;
 import 'src/theme/app_theme.dart';
 import 'src/auth/auth_screen.dart';
 import 'src/home/home_page.dart';
@@ -267,6 +268,8 @@ Future<void> main() async {
   if (url == null || anon == null) {
     throw Exception('Missing SUPABASE_URL or SUPABASE_ANON_KEY in .env');
   }
+  final abi = await rootBundle.loadString('assets/abi/TouristPass.json');
+  print('ABI Loaded! Length: ${abi.length}');
 
   await Supabase.initialize(url: url, anonKey: anon, debug: true);
   runApp(const TourSecureApp());
